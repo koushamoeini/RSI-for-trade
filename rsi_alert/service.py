@@ -31,6 +31,7 @@ class AlertPreferences:
     low_threshold: float = 30.0
     intervals: list[str] = field(default_factory=lambda: ["30m", "1d"])
     subscribers: list[str] = field(default_factory=list)
+    include_rwa: bool = False
 
 
 class RSIAlertService:
@@ -67,6 +68,7 @@ class RSIAlertService:
                     str(item)
                     for item in values.get("subscribers", default_subscribers)
                 ],
+                include_rwa=bool(values.get("include_rwa", False)),
             )
         except FileNotFoundError:
             return AlertPreferences(subscribers=default_subscribers)
@@ -86,11 +88,13 @@ class RSIAlertService:
     def settings_text(self) -> str:
         high = "روشن ✅" if self.preferences.high_enabled else "خاموش ❌"
         low = "روشن ✅" if self.preferences.low_enabled else "خاموش ❌"
+        rwa = "نمایش ✅" if self.preferences.include_rwa else "مخفی ❌"
         return (
             "⚙️ تنظیمات هشدار RSI\n\n"
             f"📈 High: {high} — بیشتر از {self.preferences.high_threshold:g}\n"
             f"📉 Low: {low} — کمتر از {self.preferences.low_threshold:g}\n"
             f"🏦 بازار: Toobit {'Futures (USDT-M)' if self.settings.market_type == 'futures' else 'Spot'}\n"
+            f"📊 سهام و TradFi: {rwa}\n"
             f"⏱ تایم‌فریم‌ها: {', '.join(self.preferences.intervals)}\n\n"
             "برای تغییر تنظیمات، دکمه‌های زیر را بزنید."
         )
@@ -124,6 +128,16 @@ class RSIAlertService:
                 ],
                 timeframe_buttons[:3],
                 timeframe_buttons[3:],
+                [
+                    {
+                        "text": (
+                            "📊 سهام و TradFi: نمایش ✅"
+                            if p.include_rwa
+                            else "📊 سهام و TradFi: مخفی ❌"
+                        ),
+                        "callback_data": "market:rwa",
+                    }
+                ],
                 [{"text": "🔄 بروزرسانی", "callback_data": "refresh"}],
             ]
         }
@@ -185,7 +199,7 @@ class RSIAlertService:
                 if item["status"] == "TRADING"
                 and item.get("quoteAsset") == self.settings.quote_asset
                 and not item.get("inverse", False)
-                and not item.get("isRwa", False)
+                and (self.preferences.include_rwa or not item.get("isRwa", False))
                 and item["symbol"] not in excluded
                 and item.get("underlying", "") not in excluded
             )
@@ -392,6 +406,8 @@ class RSIAlertService:
                 self.preferences.intervals.append(interval)
                 order = ("15m", "30m", "1h", "4h", "1d")
                 self.preferences.intervals.sort(key=order.index)
+        elif data == "market:rwa":
+            self.preferences.include_rwa = not self.preferences.include_rwa
         elif data != "refresh":
             notice = "دکمه نامعتبر است."
 

@@ -25,7 +25,8 @@ To notify several people, separate their chat IDs with commas.
 
 The authorized Telegram administrator can send `/settings` to open a Persian
 button menu. The menu enables/disables High and Low alerts, adjusts their values,
-and selects one or more candle timeframes. Changes persist across restarts.
+selects one or more candle timeframes, and shows/hides Toobit RWA/TradFi futures
+(stocks, forex, and metals). Changes persist across restarts.
 Any Telegram user who presses **Start** is automatically subscribed to alerts and
 can later stop or resume them with the friendly notification button. Only the
 configured administrator can change RSI settings.
