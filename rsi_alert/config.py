@@ -15,6 +15,7 @@ class Settings:
     telegram_bot_token: str
     telegram_chat_id: str
     market_base_url: str
+    market_type: str
     quote_asset: str
     symbols: tuple[str, ...]
     exclude_symbols: tuple[str, ...]
@@ -38,6 +39,7 @@ class Settings:
             market_base_url=os.getenv(
                 "MARKET_BASE_URL", "https://api.toobit.com"
             ).rstrip("/"),
+            market_type=os.getenv("MARKET_TYPE", "futures").strip().lower(),
             quote_asset=os.getenv("QUOTE_ASSET", "USDT").strip().upper(),
             symbols=_csv(os.getenv("SYMBOLS", "ALL")),
             exclude_symbols=_csv(os.getenv("EXCLUDE_SYMBOLS", "")),
@@ -70,6 +72,8 @@ class Settings:
             raise ValueError("SCAN_EVERY_SECONDS must be at least 10")
         if self.max_concurrency < 1:
             raise ValueError("MAX_CONCURRENCY must be at least 1")
+        if self.market_type not in ("spot", "futures"):
+            raise ValueError("MARKET_TYPE must be spot or futures")
 
     @property
     def intervals(self) -> tuple[str, ...]:

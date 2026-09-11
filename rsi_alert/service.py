@@ -90,6 +90,7 @@ class RSIAlertService:
             "⚙️ تنظیمات هشدار RSI\n\n"
             f"📈 High: {high} — بیشتر از {self.preferences.high_threshold:g}\n"
             f"📉 Low: {low} — کمتر از {self.preferences.low_threshold:g}\n"
+            f"🏦 بازار: Toobit {'Futures (USDT-M)' if self.settings.market_type == 'futures' else 'Spot'}\n"
             f"⏱ تایم‌فریم‌ها: {', '.join(self.preferences.intervals)}\n\n"
             "برای تغییر تنظیمات، دکمه‌های زیر را بزنید."
         )
@@ -160,17 +161,33 @@ class RSIAlertService:
 
     async def symbols(self) -> list[str]:
         if self.settings.symbols != ("ALL",):
-            return [
-                symbol if symbol.endswith(self.settings.quote_asset) else symbol + self.settings.quote_asset
-                for symbol in self.settings.symbols
-                if symbol not in self.settings.exclude_symbols
-            ]
+            selected: list[str] = []
+            for symbol in self.settings.symbols:
+                if symbol in self.settings.exclude_symbols:
+                    continue
+                if self.settings.market_type == "futures":
+                    if "-SWAP-" not in symbol:
+                        symbol = f"{symbol.removesuffix(self.settings.quote_asset)}-SWAP-{self.settings.quote_asset}"
+                elif not symbol.endswith(self.settings.quote_asset):
+                    symbol += self.settings.quote_asset
+                selected.append(symbol)
+            return selected
 
         response = await self.client.get(
             f"{self.settings.market_base_url}/api/v1/exchangeInfo"
         )
         response.raise_for_status()
         excluded = set(self.settings.exclude_symbols)
+        if self.settings.market_type == "futures":
+            return sorted(
+                item["symbol"]
+                for item in response.json().get("contracts", [])
+                if item["status"] == "TRADING"
+                and item.get("quoteAsset") == self.settings.quote_asset
+                and not item.get("inverse", False)
+                and item["symbol"] not in excluded
+                and item.get("underlying", "") not in excluded
+            )
         return sorted(
             item["symbol"]
             for item in response.json()["symbols"]
@@ -179,6 +196,14 @@ class RSIAlertService:
             and item.get("isSpotTradingAllowed", True)
             and item["symbol"] not in excluded
         )
+
+    def display_symbol(self, symbol: str) -> str:
+        if "-SWAP-" in symbol:
+            return symbol.replace("-SWAP-", "/") + " Perpetual"
+        if symbol.endswith(self.settings.quote_asset):
+            base = symbol[: -len(self.settings.quote_asset)]
+            return f"{base}/{self.settings.quote_asset}"
+        return symbol
 
     async def get_rsi(self, symbol: str, interval: str | None = None) -> tuple[float, float]:
         # Fetch extra history so Wilder smoothing is not based on only 14 candles.
@@ -453,7 +478,7 @@ class RSIAlertService:
                 direction = "LOW 📉" if zone == "low" else "HIGH 📈"
                 await self.telegram(
                     f"RSI ALERT — {direction}\n"
-                    f"Coin: {symbol}\n"
+                    f"Contract: {self.display_symbol(symbol)}\n"
                     f"RSI({self.settings.rsi_period}): {rsi:.2f}\n"
                     f"Price: {price:g} {self.settings.quote_asset}\n"
                     f"Timeframe: {interval}\n"
@@ -468,7 +493,12 @@ class RSIAlertService:
     async def scan(self) -> None:
         symbols = await self.symbols()
         intervals = tuple(self.preferences.intervals)
-        LOGGER.info("Scanning %d symbols on timeframes: %s", len(symbols), ", ".join(intervals))
+        LOGGER.info(
+            "Scanning %d Toobit %s symbols on timeframes: %s",
+            len(symbols),
+            self.settings.market_type,
+            ", ".join(intervals),
+        )
         now = time.time()
         await asyncio.gather(
             *(

@@ -1,6 +1,6 @@
 # Cryptocurrency RSI Telegram alerts
 
-An always-on Python service that checks Toobit Spot cryptocurrencies and sends a
+An always-on Python service that checks Toobit USDT-M Futures contracts and sends a
 Telegram message when a completed candle's Wilder RSI is below 30 or above 90.
 It does not trade and does not need a Toobit account or API key.
 
@@ -30,7 +30,8 @@ Any Telegram user who presses **Start** is automatically subscribed to alerts an
 can later stop or resume them with the friendly notification button. Only the
 configured administrator can change RSI settings.
 
-`SYMBOLS=ALL` monitors every active Toobit Spot market quoted in USDT. To monitor
+`SYMBOLS=ALL` monitors every active linear Toobit Futures contract quoted in USDT.
+Set `MARKET_TYPE=spot` to use Spot instead. To monitor
 only selected coins, use `SYMBOLS=BTC,ETH,SOL`. The program adds `USDT` when needed.
 The default intervals are 30 minutes and one day. Toobit intervals such as `15m`,
 `1h`, and `4h` also work. Use commas to monitor several, such as `30m,1d`.
