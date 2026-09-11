@@ -86,23 +86,23 @@ class RSIAlertService:
         os.replace(temporary, path)
 
     def settings_text(self) -> str:
-        high = "روشن ✅" if self.preferences.high_enabled else "خاموش ❌"
-        low = "روشن ✅" if self.preferences.low_enabled else "خاموش ❌"
-        rwa = "نمایش ✅" if self.preferences.include_rwa else "مخفی ❌"
+        high = "Enabled ✅" if self.preferences.high_enabled else "Disabled ❌"
+        low = "Enabled ✅" if self.preferences.low_enabled else "Disabled ❌"
+        rwa = "Shown ✅" if self.preferences.include_rwa else "Hidden ❌"
         return (
-            "⚙️ تنظیمات هشدار RSI\n\n"
-            f"📈 High: {high} — بیشتر از {self.preferences.high_threshold:g}\n"
-            f"📉 Low: {low} — کمتر از {self.preferences.low_threshold:g}\n"
-            f"🏦 بازار: Toobit {'Futures (USDT-M)' if self.settings.market_type == 'futures' else 'Spot'}\n"
-            f"📊 سهام و TradFi: {rwa}\n"
-            f"⏱ تایم‌فریم‌ها: {', '.join(self.preferences.intervals)}\n\n"
-            "برای تغییر تنظیمات، دکمه‌های زیر را بزنید."
+            "⚙️ RSI Alert Settings\n\n"
+            f"📈 High: {high} — above {self.preferences.high_threshold:g}\n"
+            f"📉 Low: {low} — below {self.preferences.low_threshold:g}\n"
+            f"🏦 Market: Toobit {'Futures (USDT-M)' if self.settings.market_type == 'futures' else 'Spot'}\n"
+            f"📊 Stocks and TradFi: {rwa}\n"
+            f"⏱ Timeframes: {', '.join(self.preferences.intervals)}\n\n"
+            "Use the buttons below to change the settings."
         )
 
     def settings_keyboard(self) -> dict[str, object]:
         p = self.preferences
-        high_toggle = "📈 High: روشن ✅" if p.high_enabled else "📈 High: خاموش ❌"
-        low_toggle = "📉 Low: روشن ✅" if p.low_enabled else "📉 Low: خاموش ❌"
+        high_toggle = "📈 High: Enabled ✅" if p.high_enabled else "📈 High: Disabled ❌"
+        low_toggle = "📉 Low: Enabled ✅" if p.low_enabled else "📉 Low: Disabled ❌"
         timeframe_buttons = [
             {
                 "text": ("✅ " if value in p.intervals else "⬜ ") + value,
@@ -131,14 +131,14 @@ class RSIAlertService:
                 [
                     {
                         "text": (
-                            "📊 سهام و TradFi: نمایش ✅"
+                            "📊 Stocks and TradFi: Shown ✅"
                             if p.include_rwa
-                            else "📊 سهام و TradFi: مخفی ❌"
+                            else "📊 Stocks and TradFi: Hidden ❌"
                         ),
                         "callback_data": "market:rwa",
                     }
                 ],
-                [{"text": "🔄 بروزرسانی", "callback_data": "refresh"}],
+                [{"text": "🔄 Refresh", "callback_data": "refresh"}],
             ]
         }
 
@@ -254,14 +254,15 @@ class RSIAlertService:
             if chat_id in self.settings.admin_chat_ids:
                 await self.telegram_to(
                     chat_id,
-                    "سلام 🌷\nهشدارها برای شما فعال شد.\n\n" + self.settings_text(),
+                    "Welcome. RSI alerts are now enabled for you.\n\n"
+                    + self.settings_text(),
                     self.settings_keyboard(),
                 )
             else:
                 await self.telegram_to(
                     chat_id,
-                    "سلام 👋\nهشدارهای RSI برای شما فعال شد 🔔\n\n"
-                    "تنظیمات توسط مدیر ربات انجام می‌شود.",
+                    "Welcome. RSI alerts are now enabled for you.\n\n"
+                    "Alert settings are managed by the bot administrator.",
                     self.subscription_keyboard(True),
                 )
             return
@@ -270,20 +271,20 @@ class RSIAlertService:
                 self.preferences.subscribers.remove(chat_id)
                 self.save_preferences()
             await self.telegram_to(
-                chat_id, "دریافت هشدارها متوقف شد 🔕", self.subscription_keyboard(False)
+                chat_id, "RSI alerts have been disabled.", self.subscription_keyboard(False)
             )
             return
         if command == "/help" and chat_id not in self.settings.admin_chat_ids:
             subscribed = chat_id in self.preferences.subscribers
             await self.telegram_to(
                 chat_id,
-                "با دکمه زیر می‌توانید دریافت هشدارها را فعال یا متوقف کنید.",
+                "Use the button below to enable or disable RSI alerts.",
                 self.subscription_keyboard(subscribed),
             )
             return
         if chat_id not in self.settings.admin_chat_ids:
             await self.telegram_to(
-                chat_id, "⛔ فقط مدیر ربات می‌تواند تنظیمات را تغییر دهد."
+                chat_id, "Only the bot administrator can change alert settings."
             )
             return
         if command in ("/help", "/settings"):
@@ -312,15 +313,15 @@ class RSIAlertService:
             setattr(self.preferences, f"{side}_enabled", True)
         self.save_preferences()
         await self.telegram_to(
-            chat_id, "✅ ذخیره شد\n\n" + self.settings_text(), self.settings_keyboard()
+            chat_id, "✅ Settings saved\n\n" + self.settings_text(), self.settings_keyboard()
         )
 
     @staticmethod
     def subscription_keyboard(subscribed: bool) -> dict[str, object]:
         if subscribed:
-            button = {"text": "🔕 قطع دریافت هشدار", "callback_data": "sub:off"}
+            button = {"text": "🔕 Disable alerts", "callback_data": "sub:off"}
         else:
-            button = {"text": "🔔 فعال‌کردن هشدار", "callback_data": "sub:on"}
+            button = {"text": "🔔 Enable alerts", "callback_data": "sub:on"}
         return {"inline_keyboard": [[button]]}
 
     async def answer_callback(self, callback_id: str, text: str = "") -> None:
@@ -366,7 +367,7 @@ class RSIAlertService:
             self.save_preferences()
             await self.answer_callback(
                 callback_id,
-                "هشدارها فعال شد ✅" if subscribe else "هشدارها متوقف شد 🔕",
+                "Alerts enabled ✅" if subscribe else "Alerts disabled 🔕",
             )
             url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/editMessageReplyMarkup"
             response = await self.client.post(
@@ -380,10 +381,10 @@ class RSIAlertService:
             response.raise_for_status()
             return
         if chat_id not in self.settings.admin_chat_ids:
-            await self.answer_callback(callback_id, "اجازه تغییر تنظیمات را ندارید.")
+            await self.answer_callback(callback_id, "You cannot change these settings.")
             return
 
-        notice = "ذخیره شد ✅"
+        notice = "Saved ✅"
         if data.startswith("toggle:"):
             side = data.split(":", 1)[1]
             if side in ("high", "low"):
@@ -399,7 +400,7 @@ class RSIAlertService:
             interval = data.split(":", 1)[1]
             if interval in self.preferences.intervals:
                 if len(self.preferences.intervals) == 1:
-                    notice = "حداقل یک تایم‌فریم باید روشن باشد."
+                    notice = "At least one timeframe must remain enabled."
                 else:
                     self.preferences.intervals.remove(interval)
             else:
@@ -409,7 +410,7 @@ class RSIAlertService:
         elif data == "market:rwa":
             self.preferences.include_rwa = not self.preferences.include_rwa
         elif data != "refresh":
-            notice = "دکمه نامعتبر است."
+            notice = "Invalid button."
 
         self.save_preferences()
         await self.answer_callback(callback_id, notice)
