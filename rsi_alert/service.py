@@ -185,6 +185,7 @@ class RSIAlertService:
                 if item["status"] == "TRADING"
                 and item.get("quoteAsset") == self.settings.quote_asset
                 and not item.get("inverse", False)
+                and not item.get("isRwa", False)
                 and item["symbol"] not in excluded
                 and item.get("underlying", "") not in excluded
             )

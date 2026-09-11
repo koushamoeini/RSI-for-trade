@@ -30,7 +30,8 @@ Any Telegram user who presses **Start** is automatically subscribed to alerts an
 can later stop or resume them with the friendly notification button. Only the
 configured administrator can change RSI settings.
 
-`SYMBOLS=ALL` monitors every active linear Toobit Futures contract quoted in USDT.
+`SYMBOLS=ALL` monitors every active crypto-only linear Toobit Futures contract
+quoted in USDT. RWA/TradFi contracts such as stocks, forex, and metals are excluded.
 Set `MARKET_TYPE=spot` to use Spot instead. To monitor
 only selected coins, use `SYMBOLS=BTC,ETH,SOL`. The program adds `USDT` when needed.
 The default intervals are 30 minutes and one day. Toobit intervals such as `15m`,
