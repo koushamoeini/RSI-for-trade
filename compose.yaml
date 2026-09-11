@@ -1,0 +1,23 @@
+services:
+  rsi-alert:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    # Required on servers where the local Xray proxy listens only on 127.0.0.1.
+    network_mode: host
+    mem_limit: 256m
+    cpus: 0.5
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    volumes:
+      - ./data:/app/data
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

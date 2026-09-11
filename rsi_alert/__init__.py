@@ -1,0 +1,2 @@
+"""RSI cryptocurrency alert service."""
+
