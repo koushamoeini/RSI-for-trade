@@ -14,7 +14,7 @@ def _csv(value: str) -> tuple[str, ...]:
 class Settings:
     telegram_bot_token: str
     telegram_chat_id: str
-    binance_base_url: str
+    market_base_url: str
     quote_asset: str
     symbols: tuple[str, ...]
     exclude_symbols: tuple[str, ...]
@@ -35,8 +35,8 @@ class Settings:
         settings = cls(
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
-            binance_base_url=os.getenv(
-                "BINANCE_BASE_URL", "https://data-api.binance.vision"
+            market_base_url=os.getenv(
+                "MARKET_BASE_URL", "https://api.toobit.com"
             ).rstrip("/"),
             quote_asset=os.getenv("QUOTE_ASSET", "USDT").strip().upper(),
             symbols=_csv(os.getenv("SYMBOLS", "ALL")),
@@ -73,7 +73,7 @@ class Settings:
 
     @property
     def intervals(self) -> tuple[str, ...]:
-        """Configured Binance candle intervals (comma-separated in the env file)."""
+        """Configured candle intervals (comma-separated in the env file)."""
         values = tuple(item.strip() for item in self.interval.split(",") if item.strip())
         if not values:
             raise ValueError("CANDLE_INTERVAL must contain at least one timeframe")

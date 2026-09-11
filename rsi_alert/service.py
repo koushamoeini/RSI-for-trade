@@ -166,7 +166,9 @@ class RSIAlertService:
                 if symbol not in self.settings.exclude_symbols
             ]
 
-        response = await self.client.get(f"{self.settings.binance_base_url}/api/v3/exchangeInfo")
+        response = await self.client.get(
+            f"{self.settings.market_base_url}/api/v1/exchangeInfo"
+        )
         response.raise_for_status()
         excluded = set(self.settings.exclude_symbols)
         return sorted(
@@ -184,7 +186,7 @@ class RSIAlertService:
         candle_interval = interval or self.settings.intervals[0]
         async with self.semaphore:
             response = await self.client.get(
-                f"{self.settings.binance_base_url}/api/v3/klines",
+                f"{self.settings.market_base_url}/quote/v1/klines",
                 params={"symbol": symbol, "interval": candle_interval, "limit": limit},
             )
             response.raise_for_status()
