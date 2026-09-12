@@ -44,9 +44,23 @@ class RSIAlertService:
         self.semaphore = asyncio.Semaphore(settings.max_concurrency)
         self.telegram_lock = asyncio.Lock()
         self.last_telegram_send = 0.0
-        self.client = httpx.AsyncClient(
-            timeout=settings.request_timeout_seconds,
-            headers={"User-Agent": "rsi-telegram-alert/1.0"},
+        common = {
+            "timeout": settings.request_timeout_seconds,
+            "headers": {"User-Agent": "rsi-telegram-alert/1.0"},
+        }
+        self.market_client = httpx.AsyncClient(
+            **common,
+            limits=httpx.Limits(
+                max_connections=settings.max_concurrency + 2,
+                max_keepalive_connections=settings.max_concurrency,
+                keepalive_expiry=15,
+            ),
+        )
+        self.telegram_client = httpx.AsyncClient(
+            **common,
+            limits=httpx.Limits(
+                max_connections=5, max_keepalive_connections=3, keepalive_expiry=15
+            ),
         )
 
     def load_preferences(self) -> AlertPreferences:
@@ -143,7 +157,34 @@ class RSIAlertService:
         }
 
     async def close(self) -> None:
-        await self.client.aclose()
+        await asyncio.gather(
+            self.market_client.aclose(), self.telegram_client.aclose()
+        )
+
+    async def market_get(
+        self, path: str, params: dict[str, object] | None = None
+    ) -> httpx.Response:
+        """GET market data with bounded retries for proxy/API interruptions."""
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                response = await self.market_client.get(
+                    f"{self.settings.market_base_url}{path}", params=params
+                )
+                if response.status_code == 429 or response.status_code >= 500:
+                    raise httpx.HTTPStatusError(
+                        "retryable market response",
+                        request=response.request,
+                        response=response,
+                    )
+                response.raise_for_status()
+                return response
+            except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                last_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(0.5 * (2**attempt))
+        assert last_error is not None
+        raise last_error
 
     async def telegram(self, text: str) -> None:
         url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/sendMessage"
@@ -155,7 +196,7 @@ class RSIAlertService:
                 if delay > 0:
                     await asyncio.sleep(delay)
                 for attempt in range(2):
-                    response = await self.client.post(
+                    response = await self.telegram_client.post(
                         url,
                         json={"chat_id": chat_id, "text": text},
                     )
@@ -187,10 +228,7 @@ class RSIAlertService:
                 selected.append(symbol)
             return selected
 
-        response = await self.client.get(
-            f"{self.settings.market_base_url}/api/v1/exchangeInfo"
-        )
-        response.raise_for_status()
+        response = await self.market_get("/api/v1/exchangeInfo")
         excluded = set(self.settings.exclude_symbols)
         if self.settings.market_type == "futures":
             return sorted(
@@ -225,11 +263,10 @@ class RSIAlertService:
         limit = max(self.settings.rsi_period * 8, self.settings.rsi_period + 2)
         candle_interval = interval or self.settings.intervals[0]
         async with self.semaphore:
-            response = await self.client.get(
-                f"{self.settings.market_base_url}/quote/v1/klines",
+            response = await self.market_get(
+                "/quote/v1/klines",
                 params={"symbol": symbol, "interval": candle_interval, "limit": limit},
             )
-            response.raise_for_status()
         candles = response.json()
         if len(candles) < self.settings.rsi_period + 2:
             raise ValueError("not enough candle history")
@@ -326,14 +363,14 @@ class RSIAlertService:
 
     async def answer_callback(self, callback_id: str, text: str = "") -> None:
         url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/answerCallbackQuery"
-        response = await self.client.post(
+        response = await self.telegram_client.post(
             url, json={"callback_query_id": callback_id, "text": text}
         )
         response.raise_for_status()
 
     async def edit_settings_menu(self, chat_id: str, message_id: int) -> None:
         url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/editMessageText"
-        response = await self.client.post(
+        response = await self.telegram_client.post(
             url,
             json={
                 "chat_id": chat_id,
@@ -370,7 +407,7 @@ class RSIAlertService:
                 "Alerts enabled ✅" if subscribe else "Alerts disabled 🔕",
             )
             url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/editMessageReplyMarkup"
-            response = await self.client.post(
+            response = await self.telegram_client.post(
                 url,
                 json={
                     "chat_id": chat_id,
@@ -427,7 +464,7 @@ class RSIAlertService:
             payload: dict[str, object] = {"chat_id": chat_id, "text": text}
             if reply_markup is not None:
                 payload["reply_markup"] = reply_markup
-            response = await self.client.post(url, json=payload)
+            response = await self.telegram_client.post(url, json=payload)
             response.raise_for_status()
             if not response.json().get("ok"):
                 raise RuntimeError("Telegram rejected message")
@@ -438,7 +475,7 @@ class RSIAlertService:
         # Confirm and skip historical updates on startup. This prevents an old
         # button click from being applied again after a container restart.
         try:
-            response = await self.client.get(
+            response = await self.telegram_client.get(
                 url,
                 params={"offset": -1, "timeout": 0},
                 timeout=15,
@@ -447,7 +484,7 @@ class RSIAlertService:
             old_updates = response.json().get("result", [])
             if old_updates:
                 self.telegram_offset = int(old_updates[-1]["update_id"]) + 1
-                await self.client.get(
+                await self.telegram_client.get(
                     url,
                     params={"offset": self.telegram_offset, "timeout": 0},
                     timeout=15,
@@ -462,7 +499,9 @@ class RSIAlertService:
                 }
                 if self.telegram_offset is not None:
                     params["offset"] = self.telegram_offset
-                response = await self.client.get(url, params=params, timeout=15)
+                response = await self.telegram_client.get(
+                    url, params=params, timeout=15
+                )
                 response.raise_for_status()
                 for update in response.json().get("result", []):
                     self.telegram_offset = int(update["update_id"]) + 1
