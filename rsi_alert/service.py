@@ -48,14 +48,8 @@ class RSIAlertService:
             "timeout": settings.request_timeout_seconds,
             "headers": {"User-Agent": "rsi-telegram-alert/1.0"},
         }
-        self.market_client = httpx.AsyncClient(
-            **common,
-            limits=httpx.Limits(
-                max_connections=settings.max_concurrency + 2,
-                max_keepalive_connections=settings.max_concurrency,
-                keepalive_expiry=15,
-            ),
-        )
+        self.http_common = common
+        self.market_client: httpx.AsyncClient | None = None
         self.telegram_client = httpx.AsyncClient(
             **common,
             limits=httpx.Limits(
@@ -157,14 +151,35 @@ class RSIAlertService:
         }
 
     async def close(self) -> None:
-        await asyncio.gather(
-            self.market_client.aclose(), self.telegram_client.aclose()
+        clients = [self.telegram_client.aclose()]
+        if self.market_client is not None:
+            clients.append(self.market_client.aclose())
+        await asyncio.gather(*clients)
+
+    async def open_market_client(self) -> None:
+        """Start every scan with a clean pool so stale proxy sockets cannot persist."""
+        if self.market_client is not None:
+            await self.market_client.aclose()
+        self.market_client = httpx.AsyncClient(
+            **self.http_common,
+            limits=httpx.Limits(
+                max_connections=self.settings.max_concurrency + 2,
+                max_keepalive_connections=self.settings.max_concurrency,
+                keepalive_expiry=10,
+            ),
         )
+
+    async def close_market_client(self) -> None:
+        if self.market_client is not None:
+            await self.market_client.aclose()
+            self.market_client = None
 
     async def market_get(
         self, path: str, params: dict[str, object] | None = None
     ) -> httpx.Response:
         """GET market data with bounded retries for proxy/API interruptions."""
+        if self.market_client is None:
+            raise RuntimeError("market client is not active")
         last_error: Exception | None = None
         for attempt in range(3):
             try:
@@ -548,22 +563,27 @@ class RSIAlertService:
             LOGGER.warning("Could not check %s %s: %s", symbol, interval, exc)
 
     async def scan(self) -> None:
-        symbols = await self.symbols()
-        intervals = tuple(self.preferences.intervals)
-        LOGGER.info(
-            "Scanning %d Toobit %s symbols on timeframes: %s",
-            len(symbols),
-            self.settings.market_type,
-            ", ".join(intervals),
-        )
-        now = time.time()
-        await asyncio.gather(
-            *(
-                self.check_symbol(symbol, interval, now)
-                for symbol in symbols
-                for interval in intervals
+        await self.open_market_client()
+        try:
+            symbols = await self.symbols()
+            intervals = tuple(self.preferences.intervals)
+            LOGGER.info(
+                "Scanning %d Toobit %s symbols on timeframes: %s",
+                len(symbols),
+                self.settings.market_type,
+                ", ".join(intervals),
             )
-        )
+            now = time.time()
+            await asyncio.gather(
+                *(
+                    self.check_symbol(symbol, interval, now)
+                    for symbol in symbols
+                    for interval in intervals
+                )
+            )
+            LOGGER.info("Scan completed")
+        finally:
+            await self.close_market_client()
 
     async def run(self) -> None:
         await self.telegram("✅ RSI monitor started")
