@@ -201,33 +201,60 @@ class RSIAlertService:
         assert last_error is not None
         raise last_error
 
-    async def telegram(self, text: str) -> None:
+    async def telegram(self, text: str) -> int:
         url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/sendMessage"
         chat_ids = list(self.preferences.subscribers)
+        delivered = 0
         for chat_id in chat_ids:
-            # Telegram recommends no more than roughly one message/second per chat.
-            async with self.telegram_lock:
-                delay = 1.05 - (time.monotonic() - self.last_telegram_send)
-                if delay > 0:
-                    await asyncio.sleep(delay)
-                for attempt in range(2):
-                    response = await self.telegram_client.post(
-                        url,
-                        json={"chat_id": chat_id, "text": text},
+            try:
+                # Telegram recommends no more than roughly one message/second per chat.
+                async with self.telegram_lock:
+                    delay = 1.05 - (time.monotonic() - self.last_telegram_send)
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                    for attempt in range(2):
+                        response = await self.telegram_client.post(
+                            url,
+                            json={"chat_id": chat_id, "text": text},
+                        )
+                        if response.status_code != 429 or attempt == 1:
+                            response.raise_for_status()
+                            data = response.json()
+                            if not data.get("ok"):
+                                raise RuntimeError(
+                                    "Telegram rejected message: "
+                                    f"{data.get('description')}"
+                                )
+                            self.last_telegram_send = time.monotonic()
+                            delivered += 1
+                            break
+                        retry_after = response.json().get("parameters", {}).get(
+                            "retry_after", 2
+                        )
+                        await asyncio.sleep(float(retry_after) + 0.1)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 403:
+                    if chat_id in self.preferences.subscribers:
+                        self.preferences.subscribers.remove(chat_id)
+                        self.save_preferences()
+                    LOGGER.warning(
+                        "Removed unreachable Telegram subscriber %s (HTTP 403)",
+                        chat_id,
                     )
-                    if response.status_code != 429 or attempt == 1:
-                        response.raise_for_status()
-                        data = response.json()
-                        if not data.get("ok"):
-                            raise RuntimeError(
-                                f"Telegram rejected message: {data.get('description')}"
-                            )
-                        self.last_telegram_send = time.monotonic()
-                        break
-                    retry_after = response.json().get("parameters", {}).get(
-                        "retry_after", 2
+                else:
+                    LOGGER.warning(
+                        "Telegram delivery failed for %s (HTTP %s)",
+                        chat_id,
+                        exc.response.status_code,
                     )
-                    await asyncio.sleep(float(retry_after) + 0.1)
+            except Exception as exc:
+                LOGGER.warning(
+                    "Telegram delivery failed for %s (%s): %s",
+                    chat_id,
+                    type(exc).__name__,
+                    exc,
+                )
+        return delivered
 
     async def symbols(self) -> list[str]:
         if self.settings.symbols != ("ALL",):
@@ -509,14 +536,13 @@ class RSIAlertService:
         while not self.stop_event.is_set():
             try:
                 params: dict[str, object] = {
-                    "timeout": 10,
+                    # Long polling is unreliable through some HTTP proxies.
+                    "timeout": 0,
                     "allowed_updates": json.dumps(["message", "callback_query"]),
                 }
                 if self.telegram_offset is not None:
                     params["offset"] = self.telegram_offset
-                response = await self.telegram_client.get(
-                    url, params=params, timeout=15
-                )
+                response = await self.telegram_client.get(url, params=params, timeout=10)
                 response.raise_for_status()
                 for update in response.json().get("result", []):
                     self.telegram_offset = int(update["update_id"]) + 1
@@ -529,13 +555,14 @@ class RSIAlertService:
                     chat_id = str(message.get("chat", {}).get("id", ""))
                     if text.startswith("/") and chat_id:
                         await self.handle_command(chat_id, text)
+                await asyncio.sleep(2)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 LOGGER.warning("Telegram command polling failed: %s", exc)
                 await asyncio.sleep(5)
 
-    async def check_symbol(self, symbol: str, interval: str, now: float) -> None:
+    async def check_symbol(self, symbol: str, interval: str, now: float) -> bool:
         try:
             rsi, price = await self.get_rsi(symbol, interval)
             zone = self.zone_for(rsi)
@@ -548,7 +575,7 @@ class RSIAlertService:
             )
             if should_alert:
                 direction = "LOW 📉" if zone == "low" else "HIGH 📈"
-                await self.telegram(
+                delivered = await self.telegram(
                     f"RSI ALERT — {direction}\n"
                     f"Contract: {self.display_symbol(symbol)}\n"
                     f"RSI({self.settings.rsi_period}): {rsi:.2f}\n"
@@ -556,11 +583,21 @@ class RSIAlertService:
                     f"Timeframe: {interval}\n"
                     f"Candle: completed"
                 )
+                if delivered == 0:
+                    raise RuntimeError("Alert was not delivered to any subscriber")
                 state.last_alert_at = now
                 LOGGER.info("Alert sent for %s %s: RSI %.2f", symbol, interval, rsi)
             state.zone = zone
+            return True
         except Exception as exc:  # Keep one bad/delisted pair from stopping the scan.
-            LOGGER.warning("Could not check %s %s: %s", symbol, interval, exc)
+            LOGGER.warning(
+                "Could not check %s %s (%s): %s",
+                symbol,
+                interval,
+                type(exc).__name__,
+                exc,
+            )
+            return False
 
     async def scan(self) -> None:
         await self.open_market_client()
@@ -574,13 +611,25 @@ class RSIAlertService:
                 ", ".join(intervals),
             )
             now = time.time()
-            await asyncio.gather(
+            pairs = [
+                (symbol, interval)
+                for symbol in symbols
+                for interval in intervals
+            ]
+            results = await asyncio.gather(
                 *(
                     self.check_symbol(symbol, interval, now)
-                    for symbol in symbols
-                    for interval in intervals
+                    for symbol, interval in pairs
                 )
             )
+            failed = [pair for pair, succeeded in zip(pairs, results) if not succeeded]
+            if failed:
+                LOGGER.info(
+                    "Retrying %d failed symbol/timeframe checks serially", len(failed)
+                )
+                await self.open_market_client()
+                for symbol, interval in failed:
+                    await self.check_symbol(symbol, interval, now)
             LOGGER.info("Scan completed")
         finally:
             await self.close_market_client()
