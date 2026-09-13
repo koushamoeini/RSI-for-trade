@@ -635,7 +635,6 @@ class RSIAlertService:
             await self.close_market_client()
 
     async def run(self) -> None:
-        await self.telegram("✅ RSI monitor started")
         command_task = asyncio.create_task(self.command_loop())
         try:
             while not self.stop_event.is_set():
