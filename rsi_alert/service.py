@@ -50,12 +50,6 @@ class RSIAlertService:
         }
         self.http_common = common
         self.market_client: httpx.AsyncClient | None = None
-        self.telegram_client = httpx.AsyncClient(
-            **common,
-            limits=httpx.Limits(
-                max_connections=5, max_keepalive_connections=3, keepalive_expiry=15
-            ),
-        )
 
     def load_preferences(self) -> AlertPreferences:
         path = Path(self.settings.state_file)
@@ -151,10 +145,26 @@ class RSIAlertService:
         }
 
     async def close(self) -> None:
-        clients = [self.telegram_client.aclose()]
         if self.market_client is not None:
-            clients.append(self.market_client.aclose())
-        await asyncio.gather(*clients)
+            await self.market_client.aclose()
+
+    async def telegram_request(
+        self, method: str, url: str, **kwargs: object
+    ) -> httpx.Response:
+        """Use a fresh bounded connection so a bad proxy socket cannot freeze the bot."""
+
+        async def request() -> httpx.Response:
+            async with httpx.AsyncClient(
+                **self.http_common,
+                limits=httpx.Limits(
+                    max_connections=1,
+                    max_keepalive_connections=0,
+                ),
+            ) as client:
+                return await client.request(method, url, **kwargs)
+
+        deadline = self.settings.request_timeout_seconds + 5
+        return await asyncio.wait_for(request(), timeout=deadline)
 
     async def open_market_client(self) -> None:
         """Start every scan with a clean pool so stale proxy sockets cannot persist."""
@@ -213,7 +223,8 @@ class RSIAlertService:
                     if delay > 0:
                         await asyncio.sleep(delay)
                     for attempt in range(2):
-                        response = await self.telegram_client.post(
+                        response = await self.telegram_request(
+                            "POST",
                             url,
                             json={"chat_id": chat_id, "text": text},
                         )
@@ -405,14 +416,16 @@ class RSIAlertService:
 
     async def answer_callback(self, callback_id: str, text: str = "") -> None:
         url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/answerCallbackQuery"
-        response = await self.telegram_client.post(
+        response = await self.telegram_request(
+            "POST",
             url, json={"callback_query_id": callback_id, "text": text}
         )
         response.raise_for_status()
 
     async def edit_settings_menu(self, chat_id: str, message_id: int) -> None:
         url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/editMessageText"
-        response = await self.telegram_client.post(
+        response = await self.telegram_request(
+            "POST",
             url,
             json={
                 "chat_id": chat_id,
@@ -449,7 +462,8 @@ class RSIAlertService:
                 "Alerts enabled ✅" if subscribe else "Alerts disabled 🔕",
             )
             url = f"https://api.telegram.org/bot{self.settings.telegram_bot_token}/editMessageReplyMarkup"
-            response = await self.telegram_client.post(
+            response = await self.telegram_request(
+                "POST",
                 url,
                 json={
                     "chat_id": chat_id,
@@ -506,7 +520,7 @@ class RSIAlertService:
             payload: dict[str, object] = {"chat_id": chat_id, "text": text}
             if reply_markup is not None:
                 payload["reply_markup"] = reply_markup
-            response = await self.telegram_client.post(url, json=payload)
+            response = await self.telegram_request("POST", url, json=payload)
             response.raise_for_status()
             if not response.json().get("ok"):
                 raise RuntimeError("Telegram rejected message")
@@ -517,7 +531,8 @@ class RSIAlertService:
         # Confirm and skip historical updates on startup. This prevents an old
         # button click from being applied again after a container restart.
         try:
-            response = await self.telegram_client.get(
+            response = await self.telegram_request(
+                "GET",
                 url,
                 params={"offset": -1, "timeout": 0},
                 timeout=15,
@@ -526,7 +541,8 @@ class RSIAlertService:
             old_updates = response.json().get("result", [])
             if old_updates:
                 self.telegram_offset = int(old_updates[-1]["update_id"]) + 1
-                await self.telegram_client.get(
+                await self.telegram_request(
+                    "GET",
                     url,
                     params={"offset": self.telegram_offset, "timeout": 0},
                     timeout=15,
@@ -542,7 +558,9 @@ class RSIAlertService:
                 }
                 if self.telegram_offset is not None:
                     params["offset"] = self.telegram_offset
-                response = await self.telegram_client.get(url, params=params, timeout=10)
+                response = await self.telegram_request(
+                    "GET", url, params=params, timeout=10
+                )
                 response.raise_for_status()
                 for update in response.json().get("result", []):
                     self.telegram_offset = int(update["update_id"]) + 1
